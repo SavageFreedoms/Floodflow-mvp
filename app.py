@@ -118,15 +118,22 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
 # ============================================================
 with tab1:
 
-    # Fetch all data upfront
-    with st.spinner("Fetching live data..."):
+    # Cached data fetches - only refresh every 5 minutes
+    # Prevents constant reloading on widget interaction
+    @st.cache_data(ttl=300, show_spinner=False)
+    def get_dashboard_data():
         gauge_data = fetch_gauge_data()
         noaa_forecast = fetch_noaa_forecast()
         weather_data = fetch_full_weather_forecast()
-        qpf_data = weather_data.get("qpf_data", {})
         lstm = LSTMPredictor()
         predictions = lstm.predict(gauge_data, 24)
-        alert_tier = evaluate_alert_tier(gauge_data, alert_threshold)
+        return gauge_data, noaa_forecast, weather_data, predictions
+
+    with st.spinner("Loading live data..."):
+        gauge_data, noaa_forecast, weather_data, predictions = get_dashboard_data()
+
+    qpf_data = weather_data.get("qpf_data", {})
+    alert_tier = evaluate_alert_tier(gauge_data, alert_threshold)
 
     # --------------------------------------------------------
     # ROW 1: SYSTEM ALERT TIER - full width, color coded
@@ -670,8 +677,15 @@ with tab3:
     st.subheader("LSTM Model - Peak Flow Predictions")
     st.markdown("*Predicted peak flow arrival times and volumes based on current upstream conditions and NOAA weather forecasts.*")
 
-    predictor = LSTMPredictor()
-    predictions = predictor.predict(gauge_data, forecast_hours)
+    @st.cache_data(ttl=300, show_spinner=False)
+    def get_streamflow_data(fh):
+        gd = fetch_gauge_data()
+        pred = LSTMPredictor().predict(gd, fh)
+        clf = DebrisFlowClassifier()
+        rdf = clf.classify(gd, pred)
+        return gd, pred, rdf
+    gauge_data_sf, predictions, risk_df_cached = get_streamflow_data(forecast_hours)
+    gauge_data = gauge_data_sf
 
     pred_col1, pred_col2, pred_col3 = st.columns(3)
 
@@ -712,7 +726,7 @@ with tab3:
     st.subheader("Debris Flow Risk Classification")
 
     classifier = DebrisFlowClassifier()
-    risk_df = classifier.classify(gauge_data, predictions)
+    risk_df = risk_df_cached
 
     st.dataframe(
         risk_df.style.map(
@@ -757,10 +771,15 @@ with tab4:
     )
 
     # Fetch current gauge data for context
-    with st.spinner("Loading staging intelligence..."):
-        gauge_data_st = fetch_gauge_data()
-        predictions_st = LSTMPredictor().predict(gauge_data_st, 24)
-        alert_tier_st = evaluate_alert_tier(gauge_data_st, "Standard")
+    @st.cache_data(ttl=300, show_spinner=False)
+    def get_staging_data():
+        gd = fetch_gauge_data()
+        pred = LSTMPredictor().predict(gd, 24)
+        tier = evaluate_alert_tier(gd, "Standard")
+        return gd, pred, tier
+
+    with st.spinner("Loading staging data..."):
+        gauge_data_st, predictions_st, alert_tier_st = get_staging_data()
 
     staging_zones = generate_staging_zones()
 
@@ -966,9 +985,14 @@ with tab5:
 
     predictor_da = DebrisAccumulationPredictor()
 
-    with st.spinner("Fetching gauge data for debris prediction..."):
-        gauge_data_da = fetch_gauge_data()
-        predictions_da = LSTMPredictor().predict(gauge_data_da, 24)
+    @st.cache_data(ttl=300, show_spinner=False)
+    def get_debris_data():
+        gd = fetch_gauge_data()
+        pred = LSTMPredictor().predict(gd, 24)
+        return gd, pred
+
+    with st.spinner("Loading debris data..."):
+        gauge_data_da, predictions_da = get_debris_data()
 
     acc_col1, acc_col2 = st.columns([2, 1])
 
@@ -1118,9 +1142,12 @@ with tab6:
     st.header("Weather Forecasting Integration")
     st.markdown("*Extended lead-time flood prediction from storm track, QPF, and HRRR data. Provides 36-48 hour advance warning before gauge levels spike.*")
 
-    with st.spinner("Fetching weather forecast data from NOAA..."):
-        weather_data = fetch_full_weather_forecast()
-        helene_baseline = get_helene_rainfall_reconstruction()
+    @st.cache_data(ttl=600, show_spinner=False)
+    def get_weather_data():
+        return fetch_full_weather_forecast(), get_helene_rainfall_reconstruction()
+
+    with st.spinner("Loading weather data..."):
+        weather_data, helene_baseline = get_weather_data()
 
     # Active storm status
     st.subheader("Active Storm Systems")
