@@ -6,10 +6,10 @@ Main Streamlit application entry point.
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 import folium
-from streamlit_folium import st_folium
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
@@ -535,7 +535,7 @@ with tab1:
             weight=1
         ).add_to(flood_map)
 
-    st_folium(flood_map, width=None, height=520, returned_objects=[])
+    st.components.v1.html(flood_map._repr_html_(), height=520, scrolling=False)
 
     # Map legend - only show active colors
     legend_items = []
@@ -749,7 +749,7 @@ with tab2:
                 ).add_to(m)
                 rendered += 1
 
-        st_folium(m, width=None, height=600)
+        st.components.v1.html(m._repr_html_(), height=600, scrolling=False)
 
         # Show terrain change summary if overlay is active
         if show_terrain_delta:
@@ -1014,7 +1014,7 @@ with tab4:
                 tooltip=f"CHOKE POINT: {cp['name']} ({cp['risk']})"
             ).add_to(staging_map)
 
-    st_folium(staging_map, width=None, height=480)
+    st.components.v1.html(staging_map._repr_html_(), height=480, scrolling=False)
 
     # Export
     st.markdown("---")
@@ -1148,7 +1148,7 @@ with tab5:
             )
         ).add_to(acc_map)
 
-    st_folium(acc_map, width=None, height=500)
+    st.components.v1.html(acc_map._repr_html_(), height=500, scrolling=False)
 
 
     st.markdown("---")
