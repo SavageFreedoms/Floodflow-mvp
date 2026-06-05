@@ -103,9 +103,58 @@ st.sidebar.markdown("- USGS Stream Gauges")
 st.sidebar.markdown("- NOAA National Water Model")
 st.sidebar.markdown("- USACE Helene High-Water Marks")
 st.sidebar.markdown("---")
+if st.sidebar.button("🔄 Refresh Live Data", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+st.sidebar.caption("Data refreshes every 15 min automatically.")
 st.sidebar.markdown("*Adapt. Advance. Achieve.*")
 
 # Main content tabs
+
+# ============================================================
+# TOP-LEVEL CACHED DATA FUNCTIONS
+# Defined outside tabs so they persist across reruns
+# TTL=900 seconds (15 min) - prevents constant API calls
+# ============================================================
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_dashboard_data():
+    gd = fetch_gauge_data()
+    nf = fetch_noaa_forecast()
+    wd = fetch_full_weather_forecast()
+    lstm = LSTMPredictor()
+    pred = lstm.predict(gd, 24)
+    return gd, nf, wd, pred
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_streamflow_data(fh):
+    gd = fetch_gauge_data()
+    pred = LSTMPredictor().predict(gd, fh)
+    clf = DebrisFlowClassifier()
+    rdf = clf.classify(gd, pred)
+    return gd, pred, rdf
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_weather_data():
+    return fetch_full_weather_forecast(), get_helene_rainfall_reconstruction()
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_debris_data():
+    gd = fetch_gauge_data()
+    pred = LSTMPredictor().predict(gd, 24)
+    return gd, pred
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_staging_data():
+    gd = fetch_gauge_data()
+    pred = LSTMPredictor().predict(gd, 24)
+    tier = evaluate_alert_tier(gd, "Standard")
+    return gd, pred, tier
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_terrain_overlays():
+    return generate_map_overlay_data()
+
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📡 Live Dashboard",
     "🗺️ Hazard Map",
@@ -123,17 +172,6 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
 # TAB 1: LIVE DASHBOARD
 # ============================================================
 with tab1:
-
-    # Cached data fetches - only refresh every 5 minutes
-    # Prevents constant reloading on widget interaction
-    @st.cache_data(ttl=300, show_spinner=False)
-    def get_dashboard_data():
-        gauge_data = fetch_gauge_data()
-        noaa_forecast = fetch_noaa_forecast()
-        weather_data = fetch_full_weather_forecast()
-        lstm = LSTMPredictor()
-        predictions = lstm.predict(gauge_data, 24)
-        return gauge_data, noaa_forecast, weather_data, predictions
 
     with st.spinner("Loading live data..."):
         gauge_data, noaa_forecast, weather_data, predictions = get_dashboard_data()
@@ -681,9 +719,6 @@ with tab2:
         # Terrain delta overlay - pre/post Helene geological changes
         if show_terrain_delta:
             with st.spinner("Loading terrain change data..."):
-                @st.cache_data(ttl=3600, show_spinner=False)
-                def get_terrain_overlays():
-                    return generate_map_overlay_data()
                 overlays = get_terrain_overlays()
 
             # Render only significant change cells
@@ -743,13 +778,6 @@ with tab3:
     st.subheader("LSTM Model - Peak Flow Predictions")
     st.markdown("*Predicted peak flow arrival times and volumes based on current upstream conditions and NOAA weather forecasts.*")
 
-    @st.cache_data(ttl=300, show_spinner=False)
-    def get_streamflow_data(fh):
-        gd = fetch_gauge_data()
-        pred = LSTMPredictor().predict(gd, fh)
-        clf = DebrisFlowClassifier()
-        rdf = clf.classify(gd, pred)
-        return gd, pred, rdf
     gauge_data_sf, predictions, risk_df_cached = get_streamflow_data(forecast_hours)
     gauge_data = gauge_data_sf
 
@@ -837,13 +865,6 @@ with tab4:
     )
 
     # Fetch current gauge data for context
-    @st.cache_data(ttl=300, show_spinner=False)
-    def get_staging_data():
-        gd = fetch_gauge_data()
-        pred = LSTMPredictor().predict(gd, 24)
-        tier = evaluate_alert_tier(gd, "Standard")
-        return gd, pred, tier
-
     with st.spinner("Loading staging data..."):
         gauge_data_st, predictions_st, alert_tier_st = get_staging_data()
 
@@ -1051,12 +1072,6 @@ with tab5:
 
     predictor_da = DebrisAccumulationPredictor()
 
-    @st.cache_data(ttl=300, show_spinner=False)
-    def get_debris_data():
-        gd = fetch_gauge_data()
-        pred = LSTMPredictor().predict(gd, 24)
-        return gd, pred
-
     with st.spinner("Loading debris data..."):
         gauge_data_da, predictions_da = get_debris_data()
 
@@ -1207,10 +1222,6 @@ with tab5:
 with tab6:
     st.header("Weather Forecasting Integration")
     st.markdown("*Extended lead-time flood prediction from storm track, QPF, and HRRR data. Provides 36-48 hour advance warning before gauge levels spike.*")
-
-    @st.cache_data(ttl=600, show_spinner=False)
-    def get_weather_data():
-        return fetch_full_weather_forecast(), get_helene_rainfall_reconstruction()
 
     with st.spinner("Loading weather data..."):
         weather_data, helene_baseline = get_weather_data()
@@ -1739,14 +1750,12 @@ with tab8:
             if st.button("⏹️ STOP Training Engine", type="primary",
                         use_container_width=True, key="stop_training_btn"):
                 result = stop_training()
-                st.success("Training engine stopping. Current scenario will complete before stopping.")
-                st.rerun()
+                st.success("Training engine stopping. Refresh the page in a few seconds to see updated status.")
         else:
             if st.button("▶️ START Training Engine", type="primary",
                         use_container_width=True, key="start_training_btn"):
                 result = start_training(training_mode)
-                st.success(f"Training engine started in {training_mode} mode.")
-                st.rerun()
+                st.success(f"Training engine started in {training_mode} mode. Refresh the page in a few seconds to see updated status.")
 
     st.markdown("---")
 
