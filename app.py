@@ -25,6 +25,9 @@ from data.weather_forecast import (
 from models.lstm_predictor import LSTMPredictor
 from models.debris_accumulation import DebrisAccumulationPredictor, HELENE_DEPOSIT_LOCATIONS
 from models.scenario_engine import ScenarioEngine, HISTORICAL_EVENTS, STORM_TEMPLATES
+from models.autonomous_trainer import (start_training, stop_training, read_state,
+    load_performance_metrics, load_scenario_log, get_parameter_space_info,
+    TOTAL_PERMUTATIONS)
 from models.timeline_engine import (generate_event_timeline_df, get_key_timestamps_for_event,
     get_recovery_intelligence_df, get_phase_summary, EVENT_TIMELINES)
 from data.lidar_pipeline import (generate_map_overlay_data, get_overlay_summary,
@@ -103,7 +106,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("*Adapt. Advance. Achieve.*")
 
 # Main content tabs
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📡 Live Dashboard",
     "🗺️ Hazard Map",
     "📊 Streamflow Analysis",
@@ -111,6 +114,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🌊 Debris Accumulation",
     "🌀 Weather Forecasting",
     "🧪 Scenario Testing",
+    "🤖 Autonomous Training",
     "📋 Model Training"
 ])
 
@@ -1674,9 +1678,266 @@ with tab7:
             st.dataframe(result["acc_df"][display_cols], use_container_width=True, hide_index=True)
 
 
-# TAB 8: MODEL TRAINING
+
+# ============================================================
+# TAB 8: AUTONOMOUS TRAINING
 # ============================================================
 with tab8:
+    st.header("Autonomous Model Training Engine")
+    st.markdown(
+        '''<div style="background:#1B3A5C; color:white; padding:12px 16px;
+        border-radius:6px; font-size:13px; margin-bottom:16px;">
+        When turned ON the engine runs continuously in the background, cycling through every
+        combination of storm parameters: rainfall intensity, storm track, antecedent soil moisture,
+        season, and duration. Each run generates a prediction and expands the training dataset.
+        The more scenarios it completes, the tighter the model confidence intervals become.
+        Turn it OFF at any time. All progress is saved and resumes where it left off.
+        </div>''',
+        unsafe_allow_html=True
+    )
+
+    # Read current state
+    training_state = read_state()
+    is_running = training_state.get("running", False)
+    metrics = load_performance_metrics()
+    param_info = get_parameter_space_info()
+
+    # --------------------------------------------------------
+    # MASTER ON/OFF CONTROL
+    # --------------------------------------------------------
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 1, 2])
+
+    with ctrl_col1:
+        status_color = "#1E8449" if is_running else "#8B0000"
+        status_label = "RUNNING" if is_running else "STOPPED"
+        status_icon = "🟢" if is_running else "🔴"
+        st.markdown(
+            f'''<div style="background:{status_color}; color:white; padding:16px 20px;
+            border-radius:8px; text-align:center;">
+            <div style="font-size:28px;">{status_icon}</div>
+            <div style="font-size:20px; font-weight:bold;">ENGINE {status_label}</div>
+            <div style="font-size:12px; opacity:0.85; margin-top:4px;">
+            {training_state.get("scenarios_completed", 0):,} total scenarios completed
+            </div>
+            </div>''',
+            unsafe_allow_html=True
+        )
+
+    with ctrl_col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        training_mode = st.selectbox(
+            "Training Mode",
+            ["SYSTEMATIC", "RANDOM"],
+            index=0,
+            help="SYSTEMATIC exhausts all permutations in order. RANDOM samples randomly for faster coverage.",
+            key="training_mode_select"
+        )
+
+    with ctrl_col3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if is_running:
+            if st.button("⏹️ STOP Training Engine", type="primary",
+                        use_container_width=True, key="stop_training_btn"):
+                result = stop_training()
+                st.success("Training engine stopping. Current scenario will complete before stopping.")
+                st.rerun()
+        else:
+            if st.button("▶️ START Training Engine", type="primary",
+                        use_container_width=True, key="start_training_btn"):
+                result = start_training(training_mode)
+                st.success(f"Training engine started in {training_mode} mode.")
+                st.rerun()
+
+    st.markdown("---")
+
+    # --------------------------------------------------------
+    # CURRENT SCENARIO STATUS
+    # --------------------------------------------------------
+    if is_running:
+        current = training_state.get("current_scenario", {})
+        st.subheader("Currently Running")
+        cur_col1, cur_col2, cur_col3, cur_col4, cur_col5 = st.columns(5)
+        with cur_col1:
+            st.metric("Rainfall", f'{current.get("rainfall_in", 0):.1f}"')
+        with cur_col2:
+            st.metric("Storm Track", current.get("track", "N/A").replace("_", " ").title())
+        with cur_col3:
+            st.metric("Soil Moisture", current.get("moisture", "N/A"))
+        with cur_col4:
+            st.metric("Alert Tier", current.get("alert_tier", "N/A"))
+        with cur_col5:
+            st.metric("Model Accuracy", f"{current.get('accuracy_pct', 0):.1f}%")
+
+        last_run = training_state.get("last_run_at", "")
+        session_count = training_state.get("scenarios_this_session", 0)
+        st.caption(f"Session scenarios: {session_count:,} | Last run: {last_run[:19] if last_run else 'N/A'} UTC")
+        st.markdown("---")
+
+    # --------------------------------------------------------
+    # PARAMETER SPACE COVERAGE
+    # --------------------------------------------------------
+    st.subheader("Parameter Space Coverage")
+    total = param_info["total_permutations"]
+    completed = metrics.get("total_scenarios", 0)
+    coverage_pct = min(completed / total * 100, 100) if total > 0 else 0
+
+    prog_col1, prog_col2 = st.columns([3, 1])
+    with prog_col1:
+        st.progress(coverage_pct / 100)
+        st.caption(f"{completed:,} of {total:,} permutations completed ({coverage_pct:.1f}%)")
+    with prog_col2:
+        est_remaining = max(0, total - completed)
+        est_hrs = round(est_remaining * 0.1 / 3600, 1)
+        st.metric("Est. Remaining", f"{est_hrs:.0f} hrs" if est_hrs > 1 else f"{est_remaining} runs")
+
+    # Parameter breakdown table
+    param_rows = []
+    for param, count in param_info["parameters"].items():
+        coverage = metrics.get(f"{param}_coverage", {})
+        covered = len(coverage) if coverage else 0
+        param_rows.append({
+            "Parameter": param.replace("_", " ").title(),
+            "Total Values": count,
+            "Values Covered": min(covered, count),
+            "Coverage %": f"{min(covered / count * 100, 100):.0f}%"
+        })
+    st.dataframe(pd.DataFrame(param_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # --------------------------------------------------------
+    # PERFORMANCE METRICS
+    # --------------------------------------------------------
+    st.subheader("Model Performance Metrics")
+
+    perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+    with perf_col1:
+        st.metric("Mean Accuracy", f"{metrics.get('mean_accuracy_pct', 72.0):.1f}%",
+                 delta=f"+{metrics.get('mean_accuracy_pct', 72.0) - 72:.1f}% vs baseline")
+    with perf_col2:
+        st.metric("Total Scenarios", f"{metrics.get('total_scenarios', 0):,}")
+    with perf_col3:
+        st.metric("High Risk Scenarios", f"{metrics.get('high_risk_scenario_count', 0):,}",
+                 help="WARNING + IMMINENT tier scenarios")
+    with perf_col4:
+        tier_dist = metrics.get("alert_tier_distribution", {})
+        imminent_count = tier_dist.get("IMMINENT", 0)
+        st.metric("Imminent Tier Runs", f"{imminent_count:,}")
+
+    # Accuracy trend chart
+    accuracy_trend = metrics.get("accuracy_trend", [])
+    if len(accuracy_trend) >= 2:
+        st.subheader("Model Accuracy Trend")
+        trend_df = pd.DataFrame(accuracy_trend)
+        import plotly.express as px_at
+        fig_trend = px_at.line(
+            trend_df, x="scenarios", y="accuracy_pct",
+            title="Rolling Accuracy vs Scenarios Completed",
+            labels={"scenarios": "Scenarios Completed", "accuracy_pct": "Accuracy (%)"},
+            color_discrete_sequence=["#2E75B6"]
+        )
+        fig_trend.add_hline(y=72, line_dash="dash", line_color="orange",
+                           annotation_text="Baseline 72%")
+        fig_trend.add_hline(y=85, line_dash="dash", line_color="green",
+                           annotation_text="Target 85%")
+        fig_trend.update_layout(height=300)
+        st.plotly_chart(fig_trend, use_container_width=True)
+    else:
+        st.info("Accuracy trend chart will appear after 100+ scenarios are completed.")
+
+    st.markdown("---")
+
+    # --------------------------------------------------------
+    # ALERT TIER DISTRIBUTION
+    # --------------------------------------------------------
+    st.subheader("Alert Tier Distribution Across All Scenarios")
+    tier_dist = metrics.get("alert_tier_distribution", {})
+    if tier_dist:
+        tier_cols = st.columns(4)
+        tier_config = [
+            ("NORMAL", "🟢", "#1E8449", tier_cols[0]),
+            ("WATCH", "🟡", "#F39C12", tier_cols[1]),
+            ("WARNING", "🟠", "#E67E22", tier_cols[2]),
+            ("IMMINENT", "🔴", "#8B0000", tier_cols[3]),
+        ]
+        for tier, icon, color, col in tier_config:
+            count = tier_dist.get(tier, 0)
+            total_scenarios = metrics.get("total_scenarios", 1)
+            pct = count / total_scenarios * 100 if total_scenarios > 0 else 0
+            with col:
+                st.markdown(
+                    f'''<div style="background:{color}; color:white; padding:12px;
+                    border-radius:6px; text-align:center;">
+                    <div style="font-size:20px;">{icon}</div>
+                    <div style="font-weight:bold; font-size:16px;">{tier}</div>
+                    <div style="font-size:22px; font-weight:bold;">{count:,}</div>
+                    <div style="font-size:12px; opacity:0.85;">{pct:.1f}% of runs</div>
+                    </div>''',
+                    unsafe_allow_html=True
+                )
+    else:
+        st.info("Alert tier distribution will appear after training runs are completed.")
+
+    st.markdown("---")
+
+    # --------------------------------------------------------
+    # RECENT SCENARIO LOG
+    # --------------------------------------------------------
+    st.subheader("Recent Scenario Log")
+    log_df = load_scenario_log(max_rows=100)
+
+    if not log_df.empty:
+        display_cols = [
+            "timestamp", "rainfall_24hr_in", "storm_track",
+            "antecedent_moisture", "season", "alert_tier",
+            "max_pct_of_helene", "fb_peak_ft", "sw_peak_ft",
+            "br_peak_ft", "accuracy_pct"
+        ]
+        display_cols = [c for c in display_cols if c in log_df.columns]
+
+        def color_tier(val):
+            if val == "IMMINENT": return "background-color: #fadbd8; font-weight: bold"
+            elif val == "WARNING": return "background-color: #fdebd0"
+            elif val == "WATCH": return "background-color: #fef9e7"
+            return ""
+
+        styled = log_df[display_cols].tail(50).style.map(
+            color_tier, subset=["alert_tier"]
+        )
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        # Download log
+        st.download_button(
+            "Download Full Scenario Log (CSV)",
+            data=log_df.to_csv(index=False),
+            file_name=f"scenario_log_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            key="download_scenario_log"
+        )
+    else:
+        st.info("No scenarios logged yet. Start the training engine to begin generating scenarios.")
+
+    st.markdown("---")
+
+    # --------------------------------------------------------
+    # DEPLOYMENT NOTE
+    # --------------------------------------------------------
+    st.markdown(
+        '''<div style="background:#f8f9fa; border-left:4px solid #F39C12;
+        padding:12px 16px; border-radius:4px; font-size:13px;">
+        <strong>Production Deployment Note:</strong> For continuous 24/7 autonomous training,
+        deploy the training engine as a dedicated background service on AWS EC2, Azure VM,
+        or a Raspberry Pi server at your FOB. The Streamlit app connects to the same state
+        files and displays live progress. The training engine runs independently of whether
+        the dashboard is open. Contact Savage Ops for production deployment configuration.
+        </div>''',
+        unsafe_allow_html=True
+    )
+
+
+# TAB 9: MODEL TRAINING
+# ============================================================
+with tab9:
     st.header("Model Training Status and Configuration")
 
     st.subheader("Training Dataset")
